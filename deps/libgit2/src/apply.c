@@ -18,14 +18,11 @@
 #include "git2/repository.h"
 #include "array.h"
 #include "patch.h"
-#include "fileops.h"
+#include "futils.h"
 #include "delta.h"
 #include "zstream.h"
 #include "reader.h"
 #include "index.h"
-
-#define apply_err(...) \
-	( git_error_set(GIT_ERROR_PATCH, __VA_ARGS__), GIT_EAPPLYFAIL )
 
 typedef struct {
 	/* The lines that we allocate ourself are allocated out of the pool.
@@ -34,6 +31,18 @@ typedef struct {
 	git_pool pool;
 	git_vector lines;
 } patch_image;
+
+static int apply_err(const char *fmt, ...) GIT_FORMAT_PRINTF(1, 2);
+static int apply_err(const char *fmt, ...)
+{
+	va_list ap;
+
+	va_start(ap, fmt);
+	git_error_vset(GIT_ERROR_PATCH, fmt, ap);
+	va_end(ap);
+
+	return GIT_EAPPLYFAIL;
+}
 
 static void patch_line_init(
 	git_diff_line *out,
@@ -199,23 +208,34 @@ static int apply_hunk(
 
 	for (i = 0; i < hunk->line_count; i++) {
 		size_t linenum = hunk->line_start + i;
-		git_diff_line *line = git_array_get(patch->lines, linenum);
+		git_diff_line *line = git_array_get(patch->lines, linenum), *prev;
 
 		if (!line) {
 			error = apply_err("preimage does not contain line %"PRIuZ, linenum);
 			goto done;
 		}
 
-		if (line->origin == GIT_DIFF_LINE_CONTEXT ||
-			line->origin == GIT_DIFF_LINE_DELETION) {
-			if ((error = git_vector_insert(&preimage.lines, line)) < 0)
-				goto done;
-		}
-
-		if (line->origin == GIT_DIFF_LINE_CONTEXT ||
-			line->origin == GIT_DIFF_LINE_ADDITION) {
-			if ((error = git_vector_insert(&postimage.lines, line)) < 0)
-				goto done;
+		switch (line->origin) {
+			case GIT_DIFF_LINE_CONTEXT_EOFNL:
+			case GIT_DIFF_LINE_DEL_EOFNL:
+			case GIT_DIFF_LINE_ADD_EOFNL:
+				prev = i ? git_array_get(patch->lines, i - 1) : NULL;
+				if (prev && prev->content[prev->content_len - 1] == '\n')
+					prev->content_len -= 1;
+				break;
+			case GIT_DIFF_LINE_CONTEXT:
+				if ((error = git_vector_insert(&preimage.lines, line)) < 0 ||
+				    (error = git_vector_insert(&postimage.lines, line)) < 0)
+					goto done;
+				break;
+			case GIT_DIFF_LINE_DELETION:
+				if ((error = git_vector_insert(&preimage.lines, line)) < 0)
+					goto done;
+				break;
+			case GIT_DIFF_LINE_ADDITION:
+				if ((error = git_vector_insert(&postimage.lines, line)) < 0)
+					goto done;
+				break;
 		}
 	}
 
@@ -532,7 +552,7 @@ static int apply_one(
 	if (delta->status != GIT_DELTA_DELETED) {
 		if ((error = git_apply__patch(&post_contents, &filename, &mode,
 				pre_contents.ptr, pre_contents.size, patch, opts)) < 0 ||
-			(error = git_blob_create_frombuffer(&post_id, repo,
+			(error = git_blob_create_from_buffer(&post_id, repo,
 				post_contents.ptr, post_contents.size)) < 0)
 			goto done;
 
@@ -743,6 +763,13 @@ static int git_apply__to_index(
 done:
 	git_index_free(index);
 	return error;
+}
+
+int git_apply_options_init(git_apply_options *opts, unsigned int version)
+{
+	GIT_INIT_STRUCTURE_FROM_TEMPLATE(
+		opts, version, git_apply_options, GIT_APPLY_OPTIONS_INIT);
+	return 0;
 }
 
 /*

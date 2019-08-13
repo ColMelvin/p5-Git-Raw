@@ -10,7 +10,7 @@
 #include "refs.h"
 #include "hash.h"
 #include "repository.h"
-#include "fileops.h"
+#include "futils.h"
 #include "filebuf.h"
 #include "pack.h"
 #include "reflog.h"
@@ -18,6 +18,7 @@
 #include "iterator.h"
 #include "sortedcache.h"
 #include "signature.h"
+#include "wildmatch.h"
 
 #include <git2/tag.h>
 #include <git2/object.h>
@@ -571,7 +572,7 @@ static int iter_load_loose_paths(refdb_fs_backend *backend, refdb_fs_iter *iter)
 		ref_name = git_buf_cstr(&path);
 
 		if (git__suffixcmp(ref_name, ".lock") == 0 ||
-			(iter->glob && p_fnmatch(iter->glob, ref_name, 0) != 0))
+			(iter->glob && wildmatch(iter->glob, ref_name, 0) != 0))
 			continue;
 
 		ref_dup = git_pool_strdup(&iter->pool, ref_name);
@@ -617,7 +618,7 @@ static int refdb_fs_backend__iterator_next(
 
 		if (ref->flags & PACKREF_SHADOWED)
 			continue;
-		if (iter->glob && p_fnmatch(iter->glob, ref->name, 0) != 0)
+		if (iter->glob && wildmatch(iter->glob, ref->name, 0) != 0)
 			continue;
 
 		*out = git_reference__alloc(ref->name, &ref->oid, &ref->peel);
@@ -660,7 +661,7 @@ static int refdb_fs_backend__iterator_next_name(
 
 		if (ref->flags & PACKREF_SHADOWED)
 			continue;
-		if (iter->glob && p_fnmatch(iter->glob, ref->name, 0) != 0)
+		if (iter->glob && wildmatch(iter->glob, ref->name, 0) != 0)
 			continue;
 
 		*out = ref->name;
@@ -1103,7 +1104,7 @@ static int should_write_reflog(int *write, git_repository *repo, const char *nam
 {
 	int error, logall;
 
-	error = git_repository__cvar(&logall, repo, GIT_CVAR_LOGALLREFUPDATES);
+	error = git_repository__configmap_lookup(&logall, repo, GIT_CONFIGMAP_LOGALLREFUPDATES);
 	if (error < 0)
 		return error;
 
@@ -2113,15 +2114,15 @@ int git_refdb_backend_fs(
 
 	git_buf_dispose(&gitpath);
 
-	if (!git_repository__cvar(&t, backend->repo, GIT_CVAR_IGNORECASE) && t) {
+	if (!git_repository__configmap_lookup(&t, backend->repo, GIT_CONFIGMAP_IGNORECASE) && t) {
 		backend->iterator_flags |= GIT_ITERATOR_IGNORE_CASE;
 		backend->direach_flags  |= GIT_PATH_DIR_IGNORE_CASE;
 	}
-	if (!git_repository__cvar(&t, backend->repo, GIT_CVAR_PRECOMPOSE) && t) {
+	if (!git_repository__configmap_lookup(&t, backend->repo, GIT_CONFIGMAP_PRECOMPOSE) && t) {
 		backend->iterator_flags |= GIT_ITERATOR_PRECOMPOSE_UNICODE;
 		backend->direach_flags  |= GIT_PATH_DIR_PRECOMPOSE_UNICODE;
 	}
-	if ((!git_repository__cvar(&t, backend->repo, GIT_CVAR_FSYNCOBJECTFILES) && t) ||
+	if ((!git_repository__configmap_lookup(&t, backend->repo, GIT_CONFIGMAP_FSYNCOBJECTFILES) && t) ||
 		git_repository__fsync_gitdir)
 		backend->fsync = 1;
 	backend->iterator_flags |= GIT_ITERATOR_DESCEND_SYMLINKS;
